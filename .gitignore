@@ -1,0 +1,8 @@
+__pycache__/
+private/
+backups/
+exports/
+*.dat
+*.decrypted.bin
+snapshot*.json
+tracker-personal.html
