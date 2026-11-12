@@ -6,3 +6,5 @@ exports/
 *.decrypted.bin
 snapshot*.json
 tracker-personal.html
+
+.venv/

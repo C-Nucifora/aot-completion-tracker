@@ -1,0 +1,9 @@
+[project]
+name = "aot-completion-tracker"
+version = "0.2.0"
+description = "Offline Qt6 save reader and completion planner for Wings of Freedom"
+requires-python = ">=3.11"
+dependencies = ["PySide6-Essentials>=6.8,<7"]
+
+[tool.uv]
+package = false

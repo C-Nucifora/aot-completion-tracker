@@ -2,6 +2,46 @@
 
 A local save reader and completion planner for **Attack on Titan / A.O.T. Wings of Freedom (2016), Steam 449800**. This is not an AOT2 tracker or save editor.
 
+## Native Qt6 app
+
+The desktop app uses native Qt Widgets through PySide6. It shares the save decoder and catalogue with the browser version, and reads existing tracker JSON exports.
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run from this checkout:
+
+```sh
+uv sync --locked
+./launch-native.sh
+# Optional: open a specific save or tracker export.
+./launch-native.sh '/path/to/ATWIN0000.dat'
+# Linux application menu entry, for the current user only:
+uv run --locked python install_desktop.py
+```
+
+Open **Wings of Freedom Tracker** in the application menu. The menu entry points to this checkout and its virtual environment; rerun the installer if you move it. No server or browser is needed. Qt requires a working Wayland or X11 desktop; platform libraries are operating-system dependencies.
+
+1. Use **Open save or tracker** to select a `.dat` or exported `.json` file. The app validates the save checksum before loading it.
+2. Explore Equipment, Materials, Characters, Gallery, Missions and Requests. Search filters the current section. **Only unfinished** applies to completion lists. Double-click numeric counters or toggle gallery checkboxes to make tracker-only corrections.
+3. In **Farming plan**, choose your goal and mode. **Buy shop materials** is enabled for new profiles. Check the shopping/farming list and crafting order; body-part sources remain separate where rates are unknown. Fortified equipment is always protected.
+4. Record reward-screen totals and full run times under **Run log** for observed averages.
+5. After saving in-game, use **Reload source save**. A new snapshot carries settings and run logs forward, clears manual corrections, and leaves earlier snapshots accessible.
+6. Use **Export tracker JSON** to back up corrections and logs or transfer to the browser tracker. CSV exports the currently visible filtered table. Raw decrypted bytes are available under File after importing a `.dat`.
+
+Session data is stored atomically in Qt's platform application-data directory. On Linux this is normally `~/.local/share/WingsOfFreedomNotebook/aot-completion-tracker/profiles.json`; Help → About shows the exact location. Each storage directory permits one running instance to avoid lost updates. `--data-dir /private/folder` selects another session location. The app does not watch saves or modify the source file.
+
+The native app has no accounts, analytics, uploads or network calls. The first dependency installation uses the network. Personal session data and exports belong outside this public repository.
+
+## Windows portable bundle
+
+The same native application runs on Windows. See [WINDOWS.md](WINDOWS.md) for extraction and launch instructions. Build a self-contained x64 ZIP from Linux or Windows with Python 3.11+:
+
+```sh
+python build_windows.py --out /private/folder/windows-build
+```
+
+The builder downloads embedded Python and the Windows Qt wheels named in `uv.lock`, verifies SHA256 digests, includes upstream licenses and copies only public application files. It excludes personal saves, snapshots and run history. No Wine or Windows cross-compiler is needed to assemble the ZIP. A Wine smoke check is distinct from real Windows testing.
+
+## Browser version and exporter
+
 Open `index.html` in a browser and select an `ATWIN0000.dat`, `ATWIN0001.dat`, exported snapshot or tracker JSON. The page decrypts locally and checks the save checksum. There are no accounts, analytics, uploads or dependencies. No source save is ever written.
 
 ## What's included
