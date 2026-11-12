@@ -8,21 +8,37 @@ import sys
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractTableModel, QLockFile, QModelIndex, QSaveFile, QIODevice, QSize, QSortFilterProxyModel, QStandardPaths, Qt
+from PySide6.QtCore import QAbstractTableModel, QLockFile, QModelIndex, QSaveFile, QIODevice, QSettings, QSize, QSortFilterProxyModel, QStandardPaths, Qt
 from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPalette
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox,
-    QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow, QMessageBox, QPushButton,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton,
     QSpinBox, QSplitter, QStackedWidget, QStyledItemDelegate, QTabWidget, QTableView,
-    QToolBar, QVBoxLayout, QWidget)
+    QToolButton, QVBoxLayout, QWidget)
 
+from equipment_map import EquipmentMap
+from ui_theme import apply_theme, icon
 from save_reader import csv_export, parse
 from tracker_core import (DROP_HINTS, corrected, defaults, farming_plan, integer,
                           load_profile, recipe_text, valid_settings)
 
 ROOT = Path(__file__).resolve().parent
 SAVE_DIR = (Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation))/'KoeiTecmo/Attack on Titan/SAVEDATA' if sys.platform == 'win32' else Path.home()/'.local/share/Steam/steamapps/compatdata/449800/pfx/drive_c/users/steamuser/Documents/KoeiTecmo/Attack on Titan/SAVEDATA')
-TABS = ('Overview', 'Equipment', 'Materials', 'Characters', 'Gallery', 'Missions', 'Requests', 'Farming plan', 'Run log')
+TABS = ('Overview', 'Equipment', 'Equipment map', 'Materials', 'Characters', 'Gallery', 'Missions', 'Requests', 'Farming plan', 'Run log')
+DESCRIPTIONS = (
+    'Your progress, and what stands between you and Gallery 100%.',
+    'Every blade, scabbard and ODM variant. Check recipes and historical unlocks.',
+    'Follow upgrade paths, inspect recipes and find the best known material sources.',
+    'Your supplies, shop availability and quantities for the next upgrade.',
+    'Soldier levels, battle records and attributes. Separate from gallery completion.',
+    'Track every unlock across the original game’s gallery.',
+    'Compare clear rewards, S-rank bonuses and Dire targets.',
+    'Keep track of completed requests in Normal and True Attack modes.',
+    'Turn missing equipment into a shopping list and a farming route.',
+    'Use your own run times and drops to improve the next plan.',
+)
+NAV_ICONS = ('overview', 'equipment', 'pathways', 'materials', 'characters', 'gallery', 'missions', 'requests', 'farming', 'log')
+
 
 
 def atomic_write(path, content):
@@ -37,6 +53,7 @@ def label(text, style=''):
     widget = QLabel(text)
     widget.setTextFormat(Qt.TextFormat.PlainText)
     widget.setWordWrap(True)
+    widget.setObjectName('muted')
     widget.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     if style:
         widget.setStyleSheet(style)
@@ -74,6 +91,8 @@ class TableModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.CheckStateRole and type(value) is bool:
             return Qt.CheckState.Checked if value else Qt.CheckState.Unchecked
         if role == Qt.ItemDataRole.DisplayRole:
+            if self.columns[index.column()][1] == 'progress':
+                return f'{value:.0f}%'
             if type(value) is bool:
                 return None
             if isinstance(value, (list, dict)):
@@ -161,6 +180,7 @@ class RunDialog(QDialog):
             for mission in catalog['missions']:
                 self.mission.addItem(f'{"True Attack" if mode == "true" else "Normal"} · {mission["name"]}', f'{mode}:{mission["id"]}')
         self.minutes = QDoubleSpinBox()
+        self.minutes.setAccessibleName('Whole-run time in minutes')
         self.minutes.setRange(0.1, 1440)
         self.minutes.setValue(10)
         self.minutes.setSuffix(' min')
@@ -169,10 +189,12 @@ class RunDialog(QDialog):
         layout.addLayout(form)
         row = QHBoxLayout()
         self.material = QComboBox()
+        self.material.setAccessibleName('Material gained')
         for i, name in enumerate(catalog['materials']):
             if name and name.lower() != 'dummy':
                 self.material.addItem(f'{name} · ID {i}', i)
         self.quantity = QSpinBox()
+        self.quantity.setAccessibleName('Quantity gained')
         self.quantity.setRange(0, 1000000)
         self.quantity.setValue(1)
         row.addWidget(self.material, 1)
@@ -182,9 +204,14 @@ class RunDialog(QDialog):
         self.drops = {}
         self.table = QTableView()
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(42)
         layout.addWidget(self.table, 1)
         layout.addWidget(button('Remove selected material', self.remove_material))
         self.error = label('')
+        self.error.setObjectName('notice')
         layout.addWidget(self.error)
         controls = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         controls.accepted.connect(self.accept)
@@ -226,13 +253,17 @@ class MainWindow(QMainWindow):
         self.profiles, self.active, self.raws = [], 0, {}
         self.restore_failed = False
         self.current_tables = []
-        self.plan_tab = 0
+        self.map_widget = None
+        self.plan_tab = None
         self.data_dir = Path(data_dir) if data_dir else Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation))
         self.state_path = self.data_dir/'profiles.json'
-        self.setWindowTitle('Wings of Freedom · Completion notebook')
+        self.appearance = QSettings(str(self.data_dir/'appearance.ini'), QSettings.Format.IniFormat)
+        self.dark_mode = self.appearance.value('theme', 'dark') != 'light'
+        apply_theme(QApplication.instance(), self.dark_mode)
+        self.setWindowTitle('Wings of Freedom Tracker')
         self.setWindowIcon(QIcon(str(ROOT/'assets/notebook.svg')))
-        self.resize(1250, 820)
-        self.setMinimumSize(860, 560)
+        self.resize(1320, 840)
+        self.setMinimumSize(980, 640)
         self.build_ui()
         try:
             if self.state_path.exists():
@@ -249,71 +280,163 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def build_ui(self):
-        toolbar = QToolBar('Files', self)
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
-        file_menu = self.menuBar().addMenu('&File')
+        self.file_actions = []
         for title, shortcut, callback in (
-            ('Open save or tracker…', QKeySequence.StandardKey.Open, self.open_dialog),
-            ('Reload source save', 'Ctrl+R', self.reload_save),
-            ('Export tracker JSON…', 'Ctrl+Shift+S', self.export_json),
-            ('Export current table CSV…', 'Ctrl+Shift+E', self.export_csv),
-            ('Export decrypted bytes…', '', self.export_raw),
+            ('Open save…', QKeySequence.StandardKey.Open, self.open_dialog),
+            ('Reload save', 'Ctrl+R', self.reload_save),
+            ('Tracker JSON…', 'Ctrl+Shift+S', self.export_json),
+            ('Current table CSV…', 'Ctrl+Shift+E', self.export_csv),
+            ('Decrypted bytes…', '', self.export_raw),
         ):
             action = QAction(title, self)
             if shortcut:
                 action.setShortcut(shortcut)
             action.triggered.connect(callback)
-            file_menu.addAction(action)
-            if title != 'Export decrypted bytes…':
-                toolbar.addAction(action)
-        file_menu.addSeparator()
-        quit_action = file_menu.addAction('Quit', self.close)
+            self.addAction(action)
+            self.file_actions.append(action)
+        quit_action = QAction('Quit', self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
-        help_menu = self.menuBar().addMenu('&Help')
-        help_menu.addAction('About this tracker', self.about)
+        quit_action.triggered.connect(self.close)
+        self.addAction(quit_action)
+        help_action = QAction('About', self)
+        help_action.setShortcut('F1')
+        help_action.triggered.connect(self.about)
+        self.addAction(help_action)
+
         base = QWidget()
         self.setCentralWidget(base)
-        layout = QVBoxLayout(base)
-        layout.setContentsMargins(22, 16, 22, 16)
-        layout.setSpacing(12)
-        layout.addWidget(label('Completion notebook', 'font-size: 25px; font-weight: 600;'))
-        layout.addWidget(label('A.O.T. Wings of Freedom · Original PC game · Offline save reader and farming planner'))
+        shell = QHBoxLayout(base)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+        sidebar = QFrame()
+        sidebar.setObjectName('sidebar')
+        sidebar.setFixedWidth(216)
+        rail = QVBoxLayout(sidebar)
+        rail.setContentsMargins(16, 24, 16, 16)
+        rail.setSpacing(8)
+        brand_row = QHBoxLayout()
+        mark = QLabel()
+        mark.setPixmap(self.windowIcon().pixmap(34, 34))
+        brand_row.addWidget(mark)
+        brand = label('Wings of Freedom')
+        brand.setObjectName('brand')
+        brand_row.addWidget(brand, 1)
+        rail.addLayout(brand_row)
+        rail.addWidget(label('Completion tracker'))
+        rail.addSpacing(20)
+        self.nav = QListWidget()
+        self.nav.setObjectName('navigation')
+        self.nav.addItems(TABS)
+        self.nav.setIconSize(QSize(20, 20))
+        self.nav.setSpacing(2)
+        self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        for i in range(self.nav.count()):
+            self.nav.item(i).setSizeHint(QSize(0, 36))
+        self.nav.setAccessibleName('Tracker sections')
+        self.nav.currentRowChanged.connect(self.change_page)
+        rail.addWidget(self.nav, 1)
+        self.gallery_caption = label('Gallery progress')
+        rail.addWidget(self.gallery_caption)
+        self.gallery_progress = QProgressBar()
+        self.gallery_progress.setTextVisible(False)
+        self.gallery_progress.setAccessibleName('Overall gallery completion')
+        rail.addWidget(self.gallery_progress)
+        rail.addSpacing(12)
+        self.theme_button = button('Light appearance', self.toggle_theme)
+        self.theme_button.setObjectName('quiet')
+        rail.addWidget(self.theme_button)
+        self.about_button = button('About this tracker', self.about)
+        self.about_button.setObjectName('quiet')
+        rail.addWidget(self.about_button)
+        shell.addWidget(sidebar)
+
+        workspace = QWidget()
+        workspace.setObjectName('workspace')
+        content = QVBoxLayout(workspace)
+        content.setContentsMargins(28, 24, 28, 18)
+        content.setSpacing(16)
+        header = QHBoxLayout()
+        headings = QVBoxLayout()
+        headings.setSpacing(6)
+        self.page_title = label('Overview')
+        self.page_title.setObjectName('pageTitle')
+        self.page_description = label(DESCRIPTIONS[0])
+        self.page_description.setObjectName('pageDescription')
+        headings.addWidget(self.page_title)
+        headings.addWidget(self.page_description)
+        header.addLayout(headings, 1)
+        self.reload_button = QToolButton()
+        self.reload_button.setDefaultAction(self.file_actions[1])
+        self.reload_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        header.addWidget(self.reload_button)
+        self.export_button = QToolButton()
+        self.export_button.setText('Export')
+        self.export_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.export_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        exports = QMenu(self.export_button)
+        for action in self.file_actions[2:]:
+            exports.addAction(action)
+        self.export_button.setMenu(exports)
+        header.addWidget(self.export_button)
+        self.open_button = button('Open save', self.open_dialog)
+        self.open_button.setObjectName('primary')
+        self.open_button.setToolTip('Open a game save or tracker JSON · Ctrl+O')
+        header.addWidget(self.open_button)
+        content.addLayout(header)
         controls = QHBoxLayout()
-        controls.addWidget(QLabel('Snapshot'))
+        controls.setSpacing(12)
         self.slots = QComboBox()
-        self.slots.setMinimumContentsLength(24)
+        self.slots.setAccessibleName('Save snapshot')
+        self.slots.setMinimumContentsLength(18)
         self.slots.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.slots.currentIndexChanged.connect(self.select_slot)
-        controls.addWidget(self.slots, 2)
+        controls.addWidget(self.slots, 3)
         self.search = QLineEdit()
-        self.search.setPlaceholderText('Search items, materials, missions…')
+        self.search.setPlaceholderText('Search this section…')
         self.search.setClearButtonEnabled(True)
         self.search.setAccessibleName('Search current section')
         self.search.textChanged.connect(self.filter_tables)
-        controls.addWidget(self.search, 2)
+        controls.addWidget(self.search, 4)
         self.missing = QCheckBox('Only unfinished')
         self.missing.toggled.connect(self.filter_tables)
         controls.addWidget(self.missing)
-        layout.addLayout(controls)
+        content.addLayout(controls)
         self.summary = label('')
-        layout.addWidget(self.summary)
-        split = QSplitter()
-        self.nav = QListWidget()
-        self.nav.addItems(TABS)
-        for i in range(self.nav.count()):
-            self.nav.item(i).setSizeHint(QSize(160, 38))
-        self.nav.setMinimumWidth(160)
-        self.nav.setMaximumWidth(210)
-        self.nav.setAccessibleName('Tracker sections')
-        self.nav.currentRowChanged.connect(self.change_page)
-        split.addWidget(self.nav)
+        self.summary.setObjectName('summary')
+        content.addWidget(self.summary)
         self.pages = QStackedWidget()
-        split.addWidget(self.pages)
-        split.setStretchFactor(1, 1)
-        layout.addWidget(split, 1)
+        content.addWidget(self.pages, 1)
+        shell.addWidget(workspace, 1)
+        self.update_theme_controls()
         self.nav.setCurrentRow(0)
-        self.statusBar().showMessage('Open a save to begin. Source saves are never modified.')
+        self.statusBar().setSizeGripEnabled(False)
+        self.statusBar().showMessage('Offline and read-only · Open a save to begin')
+
+    def update_theme_controls(self):
+        for i, name in enumerate(NAV_ICONS):
+            self.nav.item(i).setIcon(icon(name, self.dark_mode))
+        self.about_button.setIcon(icon('help', self.dark_mode))
+        self.theme_button.setText('Light appearance' if self.dark_mode else 'Dark appearance')
+        self.theme_button.setIcon(icon('sun' if self.dark_mode else 'moon', self.dark_mode))
+        self.file_actions[1].setIcon(icon('reload', self.dark_mode))
+        self.export_button.setIcon(icon('export', self.dark_mode))
+        self.open_button.setIcon(icon('open', self.dark_mode, primary=True))
+        if self.search.actions():
+            for action in self.search.actions():
+                if action.objectName() == 'searchIcon':
+                    self.search.removeAction(action)
+        action = self.search.addAction(icon('search', self.dark_mode), QLineEdit.ActionPosition.LeadingPosition)
+        action.setObjectName('searchIcon')
+
+    def toggle_theme(self):
+        self.dark_mode = not self.dark_mode
+        apply_theme(QApplication.instance(), self.dark_mode)
+        self.appearance.setValue('theme', 'dark' if self.dark_mode else 'light')
+        self.appearance.sync()
+        self.update_theme_controls()
+        if self.map_widget is not None:
+            self.map_widget.set_dark_mode(self.dark_mode)
+        self.statusBar().showMessage('Dark appearance' if self.dark_mode else 'Light appearance')
 
     @staticmethod
     def read_json(path, maximum=12*1024*1024):
@@ -460,11 +583,25 @@ class MainWindow(QMainWindow):
 
     def update_summary(self):
         if not self.profile():
-            self.summary.setText('')
+            self.summary.setText('No snapshot loaded · Your saves stay on this computer')
+            self.gallery_caption.setText('No gallery loaded')
+            self.gallery_progress.setRange(0, 100)
+            self.gallery_progress.setValue(0)
+            for action in self.file_actions[1:]:
+                action.setEnabled(False)
+            self.export_button.setEnabled(False)
             return
         snapshot = corrected(self.profile())
         acquired = sum(r['acquired'] for r in snapshot['gallery'])
         self.summary.setText(f'Gallery {acquired} / {len(snapshot["gallery"])}    ·    Funds {snapshot["summary"]["funds"]:,}    ·    Titans slain {snapshot["summary"]["total_kills"]:,}')
+        total = len(snapshot['gallery'])
+        self.gallery_caption.setText(f'Gallery  {acquired}/{total} · {acquired/total:.0%}' if total else 'Gallery 0/0')
+        self.gallery_progress.setRange(0, max(total, 1))
+        self.gallery_progress.setValue(acquired)
+        for action in self.file_actions[1:]:
+            action.setEnabled(True)
+        self.file_actions[1].setEnabled(bool(self.profile().get('source_path')))
+        self.export_button.setEnabled(True)
 
     def correct_value(self, path, value):
         self.profile()['settings']['overrides'][path] = value
@@ -474,8 +611,13 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage('Tracker correction saved locally. Source save unchanged; JSON export preserves corrections.')
 
     def filter_tables(self, *_):
+        if self.map_widget is not None:
+            self.map_widget.set_filter(self.search.text(), self.missing.isChecked())
         for table in self.current_tables:
-            table.model().update_filter(self.search.text(), self.missing.isChecked() and self.missing.isEnabled())
+            proxy = table.model()
+            proxy.update_filter(self.search.text(), self.missing.isChecked() and self.missing.isEnabled())
+            total, count = proxy.sourceModel().rowCount(), proxy.rowCount()
+            table.result_label.setText(f'{count} of {total} entries' if count else ('No matches. Clear search or turn off Only unfinished.' if total else 'No entries yet.'))
 
     def add_table(self, layout, rows, columns, edit=False):
         table = QTableView()
@@ -492,65 +634,100 @@ class MainWindow(QMainWindow):
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         table.setWordWrap(False)
         table.verticalHeader().setVisible(False)
-        table.verticalHeader().setDefaultSectionSize(34)
+        table.verticalHeader().setDefaultSectionSize(42)
+        table.setShowGrid(False)
+        table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         table.horizontalHeader().setStretchLastSection(True)
-        for i, (title, _) in enumerate(columns):
-            table.setColumnWidth(i, 270 if i == 0 else 105)
+        widths = {'id': 60, 'count': 85, 'shop': 130, 'offset': 120, 'runs': 65, 'duration': 80, 'mode': 90, 'mode_label': 100, 'acquired': 90, 'completed': 90, 'done': 90, 'total': 80, 'remaining': 95}
+        for i, (title, key) in enumerate(columns):
+            table.setColumnWidth(i, 270 if i == 0 else widths.get(key, 115))
         layout.addWidget(table, 1)
+        table.result_label = label('')
+        layout.addWidget(table.result_label)
         self.current_tables.append(table)
         return table
 
     def refresh(self):
         self.current_tables = []
+        self.map_widget = None
         while self.pages.count():
             old = self.pages.widget(0)
             self.pages.removeWidget(old)
             old.deleteLater()
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(12, 0, 0, 0)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
         self.pages.addWidget(page)
-        tab = TABS[max(0, self.nav.currentRow())]
-        self.missing.setEnabled(tab in ('Overview', 'Equipment', 'Gallery', 'Missions', 'Requests'))
+        current = max(0, self.nav.currentRow())
+        tab = TABS[current]
+        self.page_title.setText(tab)
+        self.page_description.setText(DESCRIPTIONS[current])
+        self.missing.setEnabled(tab in ('Overview', 'Equipment', 'Equipment map', 'Gallery', 'Missions', 'Requests'))
         self.update_summary()
         if not self.profile():
-            layout.addWidget(label('Open your save to see what is left to collect.', 'font-size: 20px; font-weight: 600;'))
-            layout.addWidget(label('Choose ATWIN0000.dat or ATWIN0001.dat, or import an existing tracker JSON. The app checks the save checksum and keeps all data on this computer.'))
-            layout.addWidget(button('Open save or tracker…', self.open_dialog))
-            layout.addStretch()
+            layout.addStretch(1)
+            title = label('Your next expedition starts here.')
+            title.setObjectName('emptyTitle')
+            layout.addWidget(title)
+            layout.addWidget(label('Open an original Wings of Freedom save to see what is left to collect, which materials to buy, and where to farm the rest.'))
+            open_save = button('Choose a save file', self.open_dialog)
+            open_save.setObjectName('primary')
+            open_save.setMaximumWidth(200)
+            layout.addWidget(open_save)
+            layout.addWidget(label('Supports ATWIN0000.dat, ATWIN0001.dat and exported tracker JSON. Everything stays local; your game save is never changed.'))
+            layout.addStretch(2)
             return
         snapshot = corrected(self.profile())
         C = self.catalog
         if tab == 'Overview':
+            remaining = sum(not r['acquired'] for r in snapshot['gallery'])
+            heading = label(f'{remaining} entries left to collect' if remaining else 'Your gallery is complete')
+            heading.setObjectName('sectionTitle')
+            layout.addWidget(heading)
+            actions = QHBoxLayout()
+            actions.addWidget(button('Review equipment', lambda: self.nav.setCurrentRow(TABS.index('Equipment'))))
+            plan_button = button('Plan your next farm', lambda: self.nav.setCurrentRow(TABS.index('Farming plan')))
+            plan_button.setObjectName('primary')
+            actions.addWidget(plan_button)
+            actions.addStretch()
+            layout.addLayout(actions)
             groups = list(dict.fromkeys(r['section'] for r in snapshot['gallery']))
             rows = []
             for section in groups:
                 entries = [r for r in snapshot['gallery'] if r['section'] == section]
                 done = sum(r['acquired'] for r in entries)
-                rows.append(dict(name=section, done=done, total=len(entries), remaining=len(entries)-done, _done=done == len(entries)))
-            layout.addWidget(label('Historical unlocks are separate from your current inventory. Use Equipment to inspect recipes and Farming plan to cover shared shortages.'))
-            self.add_table(layout, rows, [('Category', 'name'), ('Collected', 'done'), ('Total', 'total'), ('Remaining', 'remaining')])
+                rows.append(dict(name=section, done=done, total=len(entries), remaining=len(entries)-done,
+                    progress=done*100/len(entries), _done=done == len(entries)))
+            self.add_table(layout, rows, [('Gallery category', 'name'), ('Collected', 'done'), ('Total', 'total'), ('Remaining', 'remaining'), ('Completion', 'progress')])
+            layout.addWidget(label('Gallery 100% does not require maxing every character. Historical equipment unlocks count even after you upgrade or sell an item.'))
             normal = sum(r['completed'] for r in snapshot['requests'] if r['mode'] == 'normal')
             true = sum(r['completed'] for r in snapshot['requests'] if r['mode'] == 'true')
-            layout.addWidget(label(f'Requests: Normal {normal}/81 · True Attack {true}/81. Character levels and True Attack requests are tracked separately from gallery completion.'))
-            layout.addWidget(label(f'Captured {snapshot.get("captured_at", "unknown")}. Checksum verified. Saved mission times may be personal bests. Star fortification and rank labels remain unconfirmed.'))
-            layout.addWidget(label('Re-import or reload after saving in-game. Tracker corrections never modify a game save.'))
+            layout.addWidget(label(f'Requests: Normal {normal}/81 · True Attack {true}/81. Character levels and True Attack requests are tracked separately.'))
+            layout.addWidget(label('Reload after saving in-game. Saved mission times are records, not measured averages. All edits are tracker-only corrections.'))
+        elif tab == 'Equipment map':
+            self.map_widget = EquipmentMap(C, snapshot, self.profile()['settings'], self.dark_mode)
+            layout.addWidget(self.map_widget, 1)
         elif tab == 'Equipment':
             gallery = {r['key']: r['acquired'] for r in snapshot['gallery']}
             rows = []
             for e in C['equipment']:
                 if e['required']:
-                    rows.append(dict(name=e['name'], group=e['group'], acquired=gallery.get('equipment:'+e['key'], False),
+                    rows.append(dict(name=e['name'], group=e['group'], _equipment_key=e['key'], acquired=gallery.get('equipment:'+e['key'], False),
                         held=', '.join(f'+{r["fortification"]}' for r in snapshot['inventory'] if r['key'] == e['key']) or 'None',
                         stats=' / '.join(map(str, e['stats'])), recipe='; '.join(text for text in [('Develop: '+self.recipe(e['develop'])) if e['develop'] else '', ('Upgrade: '+self.recipe(e['upgrade'])) if e['upgrade'] else ''] if text),
                         _edits={'acquired': f'gallery|equipment:{e["key"]}|acquired'}))
+            layout.addWidget(button('Open interactive upgrade map', lambda: self.nav.setCurrentRow(TABS.index('Equipment map'))))
             layout.addWidget(label('Acquired means ever owned. Held shows current inventory fortification. Change checkboxes to correct the tracker only. Horses are under Gallery.'))
-            self.add_table(layout, rows, [('Item', 'name'), ('Group', 'group'), ('Acquired', 'acquired'), ('Held', 'held'), ('Stats', 'stats'), ('Materials', 'recipe')], True)
+            table = self.add_table(layout, rows, [('Item', 'name'), ('Group', 'group'), ('Acquired', 'acquired'), ('Held', 'held'), ('Stats', 'stats'), ('Materials', 'recipe')], True)
+            table.doubleClicked.connect(lambda index: self.open_map_from_table(table, index, equipment=True))
+            layout.addWidget(label('Double-click an equipment name to follow its paths in the interactive map.'))
         elif tab == 'Materials':
             rows = [dict(r, shop='Available' if r['shop_state'] >= 9 else 'Not unlocked', _edits={'count': f'materials|{r["id"]}|count'}) for r in snapshot['materials']]
             layout.addWidget(label('Double-click Held to correct a tracker count. Shop availability comes from the save flag; confirm stock in-game.'))
-            self.add_table(layout, rows, [('Material', 'name'), ('ID', 'id'), ('Held', 'count'), ('Shop', 'shop'), ('Save offset', 'offset')], True)
+            table = self.add_table(layout, rows, [('Material', 'name'), ('ID', 'id'), ('Held', 'count'), ('Shop', 'shop'), ('Save offset', 'offset')], True)
+            table.doubleClicked.connect(lambda index: self.open_map_from_table(table, index, equipment=False))
+            layout.addWidget(label('Double-click a material name for shop information and ranked farming sources.'))
         elif tab == 'Characters':
             rows = [dict(r, attributes=' / '.join(map(str, r['attributes'])), _edits={k: f'characters|{r["id"]}|{k}' for k in ('level', 'kills', 'missions')}) for r in snapshot['characters']]
             layout.addWidget(label('Double-click Level, Kills or Battles for tracker corrections. Attributes: strength, dexterity, concentration, stamina, health, leadership.'))
@@ -577,6 +754,20 @@ class MainWindow(QMainWindow):
             self.build_log(layout)
         self.filter_tables()
 
+    def open_map_from_table(self, table, index, equipment=False):
+        if not index.isValid() or index.column() != 0:
+            return
+        proxy = table.model()
+        record = proxy.sourceModel().rows[proxy.mapToSource(index).row()]
+        self.nav.setCurrentRow(TABS.index('Equipment map'))
+        if equipment:
+            key = record['_equipment_key']
+            group = int(key.split(':')[0])
+            self.map_widget.group.setCurrentIndex(self.map_widget.group.findData(group))
+            self.map_widget.select_equipment(key, True)
+        else:
+            self.map_widget.show_material(record['id'])
+
     def recipe(self, values):
         return recipe_text(values, self.catalog)
 
@@ -594,6 +785,7 @@ class MainWindow(QMainWindow):
     def setting_combo(self, row, title, key, options):
         row.addWidget(QLabel(title))
         combo = QComboBox()
+        combo.setAccessibleName(title)
         for text, value in options:
             combo.addItem(text, value)
         combo.setCurrentIndex(combo.findData(self.profile()['settings'][key]))
@@ -603,49 +795,77 @@ class MainWindow(QMainWindow):
 
     def build_plan(self, layout, snapshot):
         settings = self.profile()['settings']
+        settings_box = QGroupBox('Plan settings')
+        settings_layout = QVBoxLayout(settings_box)
         row = QHBoxLayout()
         self.setting_combo(row, 'Goal', 'goal', [('All missing equipment', 'all'), ('Perfected set', 'perfected'), ('Rozen set', 'rozen')])
         self.setting_combo(row, 'Mode', 'mode', [('Both', 'both'), ('Normal', 'normal'), ('True Attack', 'true')])
         row.addStretch()
-        layout.addLayout(row)
+        settings_layout.addLayout(row)
         checks = QHBoxLayout()
-        for text, key in [('Buy shop materials', 'buyShop'), ('Assume S rank', 'sRank'), ('Include Dire rewards', 'dire'), ('Consume unfortified inventory', 'useInventory')]:
+        checks.setSpacing(20)
+        for text, key in [('Buy shop materials', 'buyShop'), ('Assume S rank', 'sRank'), ('Include Dire rewards', 'dire')]:
             check = QCheckBox(text)
             check.setChecked(settings[key])
             check.toggled.connect(lambda value, k=key: self.set_setting(k, value))
             checks.addWidget(check)
-        layout.addLayout(checks)
-        duration = QHBoxLayout()
-        duration.addWidget(QLabel('Fallback minutes/run'))
+        checks.addStretch()
+        advanced_button = QToolButton()
+        advanced_button.setText('More options')
+        advanced_button.setCheckable(True)
+        checks.addWidget(advanced_button)
+        settings_layout.addLayout(checks)
+        advanced = QWidget()
+        advanced_layout = QGridLayout(advanced)
+        advanced_layout.setContentsMargins(0, 8, 0, 0)
+        advanced_layout.addWidget(QLabel('Fallback minutes/run'), 0, 0)
         minutes = QDoubleSpinBox()
+        minutes.setAccessibleName('Fallback minutes per run')
         minutes.setRange(0.1, 1440)
         minutes.setValue(settings['defaultMinutes'])
         minutes.setKeyboardTracking(False)
         minutes.valueChanged.connect(lambda value: self.set_setting('defaultMinutes', value))
-        duration.addWidget(minutes)
-        duration.addWidget(QLabel('Other cleanup hours'))
+        advanced_layout.addWidget(minutes, 0, 1)
+        advanced_layout.addWidget(QLabel('Other cleanup hours'), 0, 2)
         cleanup = QDoubleSpinBox()
+        cleanup.setAccessibleName('Other cleanup hours')
         cleanup.setRange(-0.5, 10000)
         cleanup.setSingleStep(0.5)
         cleanup.setSpecialValueText('Unknown')
         cleanup.setValue(-0.5 if settings['cleanupHours'] is None else settings['cleanupHours'])
         cleanup.setKeyboardTracking(False)
         cleanup.valueChanged.connect(lambda value: self.set_setting('cleanupHours', None if value < 0 else value))
-        duration.addWidget(cleanup)
-        duration.addStretch()
-        layout.addLayout(duration)
+        advanced_layout.addWidget(cleanup, 0, 3)
+        inventory = QCheckBox('Allow consuming unfortified inventory')
+        inventory.setChecked(settings['useInventory'])
+        inventory.toggled.connect(lambda value: self.set_setting('useInventory', value))
+        advanced_layout.addWidget(inventory, 1, 0, 1, 4)
+        settings_layout.addWidget(advanced)
+        advanced.setVisible(getattr(self, 'advanced_visible', False))
+        advanced_button.setChecked(getattr(self, 'advanced_visible', False))
+        advanced_button.toggled.connect(advanced.setVisible)
+        advanced_button.toggled.connect(lambda value: setattr(self, 'advanced_visible', value))
+        layout.addWidget(settings_box)
         result = farming_plan(self.catalog, snapshot, settings)
         craft, plan = result['craft'], result['plan']
         time = plan['minutes']/60
-        estimate = f'At least {time:.1f} h covered farming; {len(plan["uncovered"])} material types need a source or run samples.' if plan['uncovered'] else f'Modelled farming {time:.1f} h. Planning range {time*.8:.1f}–{time*1.5:.1f} h; timing allowance, not a confidence interval.'
-        if settings['cleanupHours'] is None or plan['uncovered']:
-            estimate += ' Full completion ETA remains unknown.'
+        if plan['uncovered']:
+            estimate = f'{len(plan["uncovered"])} materials still need drop samples'
+            detail = 'Open Body-part sources for farming hints. Log full runs to estimate repetitions.'
+            if time:
+                detail += f' Other materials have {time:.1f} h of covered farming.'
         else:
-            estimate += f' With cleanup: {time+settings["cleanupHours"]:.1f} h modelled total.'
-        layout.addWidget(label(estimate, 'font-weight: 600;'))
-        costs = f'{result["goals"]} missing equipment goals · {len(craft["steps"])} craft steps · Craft fees {craft["craftingFunds"]:,} · Shop costs {result["shopCost"]:,}'
+            estimate = f'{time:.1f} hours of modelled farming' if time else 'No material farming needed for this goal'
+            detail = f'Planning range {time*.8:.1f}–{time*1.5:.1f} h. This is a timing allowance, not a confidence interval.' if time else 'Check the crafting order and shopping list before developing your equipment.'
+        heading = label(estimate)
+        heading.setObjectName('sectionTitle')
+        layout.addWidget(heading)
+        layout.addWidget(label(detail))
+        costs = f'{result["goals"]} missing items · Crafting {craft["craftingFunds"]:,} · Purchases {result["shopCost"]:,}'
         if result['fundsGap']:
-            costs += f' · Funds shortfall {result["fundsGap"]:,}'
+            costs += f' · Need {result["fundsGap"]:,} more funds'
+        if settings['cleanupHours'] is not None and not plan['uncovered']:
+            costs += f' · Including cleanup {(plan["minutes"]/60)+settings["cleanupHours"]:.1f} h'
         layout.addWidget(label(costs))
         tabs = QTabWidget()
         layout.addWidget(tabs, 1)
@@ -669,9 +889,9 @@ class MainWindow(QMainWindow):
         drops = section('Body-part sources')
         drops.addWidget(label('Break material-bearing limbs before the nape. Random drops are not included in estimated runs until you log full-run samples.'))
         self.add_table(drops, [dict(name=self.catalog['materials'][r['id']], remaining=math.ceil(r['need']), source=DROP_HINTS.get(r['id'], 'Check mission rewards or record a source in Run log')) for r in plan['uncovered']], [('Material', 'name'), ('Still needed', 'remaining'), ('Where to get it', 'source')])
-        tabs.setCurrentIndex(self.plan_tab)
+        tabs.setCurrentIndex(self.plan_tab if self.plan_tab is not None else (3 if plan['uncovered'] and not plan['rows'] else 0))
         tabs.currentChanged.connect(lambda index: setattr(self, 'plan_tab', index))
-        layout.addWidget(label('Greedy shared-reward plan; not a proven minimum. Fortified inventory is protected. Confirm shop stock in-game. Horses and missing scenes/models need separate cleanup.'))
+        layout.addWidget(label('Estimates exclude unknown random drops. Fortified equipment is protected. Confirm shop stock in-game. Full completion time stays unknown until all sources and cleanup are covered.'))
 
     def build_log(self, layout):
         layout.addWidget(label('Log whole runs including loading and every useful reward-screen material. Observed averages replace table assumptions for that mission; rare drops are never guaranteed.'))
@@ -718,19 +938,6 @@ def main():
     app.setApplicationDisplayName('Wings of Freedom completion notebook')
     app.setOrganizationName('WingsOfFreedomNotebook')
     app.setDesktopFileName('aot-completion-tracker')
-    app.setStyle('Fusion')
-    palette = QPalette()
-    for role, color in [(QPalette.ColorRole.Window, '#f6f3e9'), (QPalette.ColorRole.WindowText, '#23392f'),
-        (QPalette.ColorRole.Base, '#ffffff'), (QPalette.ColorRole.AlternateBase, '#edf0e6'),
-        (QPalette.ColorRole.Text, '#23392f'), (QPalette.ColorRole.Button, '#e5eadc'),
-        (QPalette.ColorRole.ButtonText, '#23392f'), (QPalette.ColorRole.Highlight, '#315d47'),
-        (QPalette.ColorRole.HighlightedText, '#ffffff'), (QPalette.ColorRole.ToolTipBase, '#ffffff'),
-        (QPalette.ColorRole.ToolTipText, '#23392f')]:
-        palette.setColor(role, QColor(color))
-    palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor('#697263'))
-    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor('#65705f'))
-    app.setPalette(palette)
-    app.setStyleSheet('QToolBar { spacing: 8px; padding: 7px; } QListWidget { padding: 5px; } QListWidget::item { padding: 10px 7px; } QHeaderView::section { padding: 8px; } QPushButton { padding: 7px 12px; } QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { padding: 5px; } QTabBar::tab { padding: 8px 12px; }')
     data_dir = args.data_dir or Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation))
     try:
         data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
