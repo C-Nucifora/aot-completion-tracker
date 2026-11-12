@@ -52,7 +52,7 @@ def main():
                 archive.extractall(destination)
             manifest.append(dict(url=url, sha256=digest))
         (runtime/'python312._pth').write_text('python312.zip\n.\nLib\\site-packages\n..\nimport site\n', encoding='utf8')
-        for name in ('desktop_app.py', 'tracker_core.py', 'save_reader.py', 'catalog.json', 'launch-native.cmd', 'WINDOWS.md'):
+        for name in ('desktop_app.py', 'ui_theme.py', 'equipment_map.py', 'tracker_core.py', 'save_reader.py', 'catalog.json', 'launch-native.cmd', 'WINDOWS.md'):
             shutil.copy2(ROOT/name, bundle/name)
         shutil.copytree(ROOT/'assets', bundle/'assets')
         (bundle/'runtime-manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')

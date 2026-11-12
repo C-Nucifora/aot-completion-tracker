@@ -14,17 +14,18 @@ uv sync --locked
 # Optional: open a specific save or tracker export.
 ./launch-native.sh '/path/to/ATWIN0000.dat'
 # Linux application menu entry, for the current user only:
-uv run --locked python install_desktop.py
+python install_desktop.py
 ```
 
-Open **Wings of Freedom Tracker** in the application menu. The menu entry points to this checkout and its virtual environment; rerun the installer if you move it. No server or browser is needed. Qt requires a working Wayland or X11 desktop; platform libraries are operating-system dependencies.
+Open **Wings of Freedom Tracker** in the application menu. The installer copies the app and creates a separate runtime under `~/.local/share/aot-completion-tracker/app`, registers the menu entry, and adds `~/.local/bin/aot-tracker`. Moving the source checkout does not break the installed app. Rerun the installer to update it. Existing tracker data stays in its original location. No server or browser is needed. Dark mode is the default; the sidebar appearance switch remembers your choice in `appearance.ini` beside the session data. Qt requires a working Wayland or X11 desktop; platform libraries are operating-system dependencies.
 
 1. Use **Open save or tracker** to select a `.dat` or exported `.json` file. The app validates the save checksum before loading it.
 2. Explore Equipment, Materials, Characters, Gallery, Missions and Requests. Search filters the current section. **Only unfinished** applies to completion lists. Double-click numeric counters or toggle gallery checkboxes to make tracker-only corrections.
-3. In **Farming plan**, choose your goal and mode. **Buy shop materials** is enabled for new profiles. Check the shopping/farming list and crafting order; body-part sources remain separate where rates are unknown. Fortified equipment is always protected.
-4. Record reward-screen totals and full run times under **Run log** for observed averages.
-5. After saving in-game, use **Reload source save**. A new snapshot carries settings and run logs forward, clears manual corrections, and leaves earlier snapshots accessible.
-6. Use **Export tracker JSON** to back up corrections and logs or transfer to the browser tracker. CSV exports the currently visible filtered table. Raw decrypted bytes are available under File after importing a `.dat`.
+3. Open **Equipment map** for upgrade trees. Choose Blades, Scabbards, ODM gear or All equipment. Drag the canvas to pan; use Ctrl+wheel, zoom buttons or Fit tree to navigate. The equipment selector provides keyboard access. Arrows show actual upgrade recipes; directly developed items may be separate roots. Selecting equipment shows both available recipes and held/needed materials. Click or activate a material to see shop availability, body-part hints and missions ranked by estimated yield per minute. S-rank/Dire controls state the reward conditions; unknown limb-drop rates stay unranked. Highlight consumers to see which equipment uses a material, then Clear highlight to restore the tree. Double-click equipment/material names in the existing tables to open their map or sources.
+4. In **Farming plan**, choose your goal and mode. **Buy shop materials** is enabled for new profiles. Check the shopping/farming list and crafting order; body-part sources remain separate where rates are unknown. Fortified equipment is always protected.
+5. Record reward-screen totals and full run times under **Run log** for observed averages.
+6. After saving in-game, use **Reload source save**. A new snapshot carries settings and run logs forward, clears manual corrections, and leaves earlier snapshots accessible.
+7. Use **Export tracker JSON** to back up corrections and logs or transfer to the browser tracker. CSV exports the currently visible filtered table. Raw decrypted bytes are available under File after importing a `.dat`.
 
 Session data is stored atomically in Qt's platform application-data directory. On Linux this is normally `~/.local/share/WingsOfFreedomNotebook/aot-completion-tracker/profiles.json`; Help → About shows the exact location. Each storage directory permits one running instance to avoid lost updates. `--data-dir /private/folder` selects another session location. The app does not watch saves or modify the source file.
 
